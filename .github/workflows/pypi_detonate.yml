@@ -1,0 +1,76 @@
+name: SSC Telemetry - PyPI Package Detonation
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: "PyPI package name to install"
+        required: true
+        type: string
+      package_version:
+        description: "Specific version (leave blank for latest)"
+        required: false
+        type: string
+        default: ""
+      record_id:
+        description: "Unique ID correlating this run back to your dataset row"
+        required: true
+        type: string
+      category:
+        description: "malicious_intent | compromised_lib | benign"
+        required: true
+        type: string
+
+jobs:
+  detonate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Harden Runner (audit mode - observe only)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
+      - name: Record run metadata
+        run: |
+          echo "RECORD_ID=${{ inputs.record_id }}"
+          echo "PACKAGE=${{ inputs.package_name }}"
+          echo "VERSION=${{ inputs.package_version }}"
+          echo "CATEGORY=${{ inputs.category }}"
+          echo "run_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare isolated virtual environment
+        run: python -m venv /tmp/venv
+
+      # Honeytoken values ONLY -- fake, non-functional, for observing
+      # credential-harvesting behavior without exposing anything real.
+      - name: Install target package (telemetry capture)
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: "AKIAHONEYTOKEN00000000"
+          AWS_SECRET_ACCESS_KEY: "honeytoken/dummy/secret/value/for/research/0000"
+          PYPI_TOKEN: "pypi-honeytokendummy0000000000000000000000"
+          GH_TOKEN_DUMMY: "ghp_honeytokendummy0000000000000000000000"
+          DATABASE_URL: "postgres://honeytoken:dummy@localhost:5432/none"
+        run: |
+          set +e
+          source /tmp/venv/bin/activate
+          if [ -n "${{ inputs.package_version }}" ]; then
+            TARGET="${{ inputs.package_name }}==${{ inputs.package_version }}"
+          else
+            TARGET="${{ inputs.package_name }}"
+          fi
+          echo "Installing: $TARGET"
+          pip install "$TARGET"
+          echo "INSTALL_EXIT_CODE=$?"
+
+      - name: Record completion marker
+        if: always()
+        run: |
+          echo "run_completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "DETONATION_COMPLETE record_id=${{ inputs.record_id }} category=${{ inputs.category }}"
