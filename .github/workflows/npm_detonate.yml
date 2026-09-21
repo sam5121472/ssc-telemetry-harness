@@ -1,0 +1,86 @@
+name: SSC Telemetry - NPM Package Detonation
+
+# Manually/programmatically triggered per package via the GitHub API.
+# Runs on a fresh, ephemeral GitHub-hosted runner that is destroyed after the job.
+# Harden-Runner is set to "audit" mode: it OBSERVES and LOGS outbound network
+# calls and file-integrity events without blocking them, which is what we want
+# for telemetry collection (we need to see the attack behavior, not prevent it).
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: "npm package name to install"
+        required: true
+        type: string
+      package_version:
+        description: "Specific version (leave blank for latest)"
+        required: false
+        type: string
+        default: ""
+      record_id:
+        description: "Unique ID correlating this run back to your dataset row"
+        required: true
+        type: string
+      category:
+        description: "malicious_intent | compromised_lib | benign"
+        required: true
+        type: string
+
+jobs:
+  detonate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Harden Runner (audit mode - observe only)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
+      - name: Record run metadata
+        run: |
+          echo "RECORD_ID=${{ inputs.record_id }}"
+          echo "PACKAGE=${{ inputs.package_name }}"
+          echo "VERSION=${{ inputs.package_version }}"
+          echo "CATEGORY=${{ inputs.category }}"
+          echo "run_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Prepare isolated project directory
+        run: |
+          mkdir -p /tmp/detonation
+          cd /tmp/detonation
+          npm init -y >/dev/null 2>&1
+
+      # Honeytoken values ONLY. These are fake, single-use, non-functional
+      # strings that let us observe whether a malicious install script tries
+      # to read/exfiltrate "secrets" -- they grant no real access to anything.
+      - name: Install target package (telemetry capture)
+        working-directory: /tmp/detonation
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: "AKIAHONEYTOKEN00000000"
+          AWS_SECRET_ACCESS_KEY: "honeytoken/dummy/secret/value/for/research/0000"
+          NPM_TOKEN: "npm_honeytokendummy0000000000000000000000"
+          GH_TOKEN_DUMMY: "ghp_honeytokendummy0000000000000000000000"
+          DATABASE_URL: "postgres://honeytoken:dummy@localhost:5432/none"
+        run: |
+          set +e
+          if [ -n "${{ inputs.package_version }}" ]; then
+            TARGET="${{ inputs.package_name }}@${{ inputs.package_version }}"
+          else
+            TARGET="${{ inputs.package_name }}"
+          fi
+          echo "Installing: $TARGET"
+          npm install "$TARGET" --no-audit --no-fund
+          echo "INSTALL_EXIT_CODE=$?"
+
+      - name: Record completion marker
+        if: always()
+        run: |
+          echo "run_completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "DETONATION_COMPLETE record_id=${{ inputs.record_id }} category=${{ inputs.category }}"
